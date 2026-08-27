@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ShareThing</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>&#128193; ShareThing</h1>
+    <button class="btn btn-ghost" onclick="openSettings()">&#9881; Settings</button>
+  </header>
+
+  <div class="upload-zone" id="zone">
+    <div class="icon">&#11014;&#65039;</div>
+    <strong>Drop files here or click to select</strong>
+    <p>Max <span id="max-mb">500</span> MB per file &mdash; multiple files OK</p>
+    <input type="file" id="file-input" multiple>
+  </div>
+
+  <div class="prog" id="prog">
+    <div class="prog-outer"><div class="prog-inner" id="prog-bar"></div></div>
+    <p class="prog-label" id="prog-label">Uploading...</p>
+  </div>
+
+  <!-- Link Share -->
+  <details class="link-panel" id="link-panel">
+    <summary>&#128279; Share Links</summary>
+    <div class="link-body">
+      <div id="link-rows">
+        <div class="link-entry">
+          <input type="url" class="link-url" placeholder="https://example.com">
+          <input type="text" class="link-title" placeholder="Label (optional)">
+          <button class="btn btn-ghost btn-sm" onclick="removeLinkRow(this)" title="Remove">&#10005;</button>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <button class="btn btn-ghost btn-sm" onclick="addLinkRow()">+ Add another</button>
+        <button class="btn btn-primary btn-sm" onclick="createLinkShare()">Create Share</button>
+      </div>
+    </div>
+  </details>
+
+  <div class="sec-head" style="margin-top:16px">
+    <h2>Active Shares</h2>
+    <button class="btn btn-ghost btn-sm" onclick="loadShares()">&#8635; Refresh</button>
+  </div>
+  <div id="shares"></div>
+</div>
+
+<div class="overlay" id="modal-overlay">
+  <div class="modal">
+    <h2>Settings</h2>
+    <div class="field">
+      <label>Port</label>
+      <input type="number" id="s-port" min="1" max="65535">
+      <p class="hint">Restart server to apply port change</p>
+    </div>
+    <div class="field">
+      <label>Max File Size (MB)</label>
+      <input type="number" id="s-max" min="1">
+    </div>
+    <div class="field">
+      <label>Share Expiry (hours)</label>
+      <input type="number" id="s-exp" min="1">
+    </div>
+    <div class="field">
+      <label>Storage Directory</label>
+      <input type="text" id="s-dir">
+    </div>
+    <div class="info-grid">
+      <div class="info-row"><span>Server address</span><span id="s-addr">-</span></div>
+      <div class="info-row"><span>Disk usage</span><span id="s-disk">-</span></div>
+    </div>
+    <div class="modal-btns">
+      <button class="btn btn-ghost" onclick="closeSettings()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveSettings()">Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

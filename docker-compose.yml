@@ -1,0 +1,25 @@
+services:
+  fileshare:
+    image: ghcr.io/YOURUSER/fileshare:1.0
+    container_name: fileshare
+    restart: unless-stopped
+
+    # Matches the TrueNAS "apps" user so files land with sane ownership
+    # on the bind mount instead of being written as root.
+    user: "568:568"
+
+    ports:
+      # host:container — the app always listens on 8080 inside.
+      - "30030:8080"
+
+    volumes:
+      - /mnt/pool/apps/sharething:/data
+
+    environment:
+      # Set this to your real zone. It determines when expiry fires.
+      TZ: Etc/UTC
+
+      # Multipart uploads spill to a temp dir once they exceed 32 MB.
+      # Without this they'd land on the container's writable layer,
+      # which lives on the TrueNAS system dataset, not your pool.
+      TMPDIR: /data/tmp

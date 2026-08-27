@@ -1,0 +1,23 @@
+# Local runtime state — must never be baked into the image
+config.json
+shares.json
+uploads/
+tmp/
+
+# Build artifacts
+fileshare
+*.tar
+*.tar.gz
+
+# Packaging files themselves
+Dockerfile
+.dockerignore
+docker-compose.yml
+
+# VCS and editor noise
+.git
+.gitignore
+.vscode
+.idea
+*.swp
+.DS_Store
