@@ -723,6 +723,15 @@ func main() {
 		log.Fatalf("storage dir: %v", err)
 	}
 
+	// Multipart uploads over the in-memory threshold spill to $TMPDIR;
+	// if it's set (e.g. to keep spill files on the data volume) but
+	// doesn't exist yet, every such upload fails with a parse error.
+	if tmp := os.Getenv("TMPDIR"); tmp != "" {
+		if err := os.MkdirAll(tmp, 0755); err != nil {
+			log.Fatalf("tmpdir: %v", err)
+		}
+	}
+
 	srv := newServer(cfg, "config.json", store)
 
 	go func() {
