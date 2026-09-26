@@ -12,6 +12,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -238,6 +239,52 @@ func localIP() string {
 	return "localhost"
 }
 
+func ipOf(r *http.Request) string {
+	ip := r.RemoteAddr
+	if i := strings.LastIndex(ip, ":"); i >= 0 {
+		ip = ip[:i]
+	}
+	return ip
+}
+
+func baseURL(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+		scheme = "https"
+	}
+	return scheme + "://" + r.Host
+}
+
+// FileOut and ShareOut mirror FileInfo/Share for API responses, adding a
+// ready-to-use download URL computed from the request instead of stored.
+type FileOut struct {
+	Name       string    `json:"name"`
+	Size       int64     `json:"size"`
+	UploadedAt time.Time `json:"uploaded_at"`
+	URL        string    `json:"url"`
+}
+
+type ShareOut struct {
+	ID        string     `json:"id"`
+	Files     []FileOut  `json:"files,omitempty"`
+	Links     []LinkInfo `json:"links,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+	ExpiresAt time.Time  `json:"expires_at"`
+}
+
+func toShareOut(sh *Share, base string) ShareOut {
+	out := ShareOut{ID: sh.ID, Links: sh.Links, CreatedAt: sh.CreatedAt, ExpiresAt: sh.ExpiresAt}
+	for _, f := range sh.Files {
+		out.Files = append(out.Files, FileOut{
+			Name:       f.Name,
+			Size:       f.Size,
+			UploadedAt: f.UploadedAt,
+			URL:        base + "/d/" + sh.ID + "/" + url.PathEscape(f.Name),
+		})
+	}
+	return out
+}
+
 func dirSize(dir string) int64 {
 	var total int64
 	filepath.Walk(dir, func(_ string, fi os.FileInfo, err error) error {
@@ -273,6 +320,7 @@ func newServer(cfg *Config, cfgPath string, store *Store) *server {
 
 	s.mux.HandleFunc("/", s.handleIndex)
 	s.mux.HandleFunc("/api/upload", s.handleUpload)
+	s.mux.HandleFunc("/api/upload/file", s.handleUploadSingle)
 	s.mux.HandleFunc("/api/shares", s.handleShares)
 	s.mux.HandleFunc("/api/shares/", s.handleShareOp)
 	s.mux.HandleFunc("/api/settings", s.handleSettings)
@@ -283,11 +331,7 @@ func newServer(cfg *Config, cfgPath string, store *Store) *server {
 }
 
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	ip := r.RemoteAddr
-	if i := strings.LastIndex(ip, ":"); i >= 0 {
-		ip = ip[:i]
-	}
-	log.Printf("%s %s %s", r.Method, r.URL.Path, ip)
+	log.Printf("%s %s %s", r.Method, r.URL.Path, ipOf(r))
 	s.mux.ServeHTTP(w, r)
 }
 
@@ -305,10 +349,7 @@ func (s *server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	ip := r.RemoteAddr
-	if i := strings.LastIndex(ip, ":"); i >= 0 {
-		ip = ip[:i]
-	}
+	ip := ipOf(r)
 	// 10 uploads/min burst per IP
 	if !s.rl.allow(ip+"_up", 10.0/60.0, 10) {
 		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
@@ -389,7 +430,73 @@ func (s *server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(share)
+	json.NewEncoder(w).Encode(toShareOut(share, baseURL(r)))
+}
+
+// handleUploadSingle accepts a raw request body as one file, for simple
+// scripting: curl --data-binary @file "http://host/api/upload/file?name=file.txt"
+func (s *server) handleUploadSingle(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost && r.Method != http.MethodPut {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	ip := ipOf(r)
+	if !s.rl.allow(ip+"_up", 10.0/60.0, 10) {
+		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
+
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		name = r.Header.Get("X-Filename")
+	}
+	if name == "" {
+		http.Error(w, "filename required: pass ?name=... or X-Filename header", http.StatusBadRequest)
+		return
+	}
+
+	maxBytes := int64(s.cfg.MaxFileSizeMB) * 1024 * 1024
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes+1024)
+
+	if err := os.MkdirAll(s.cfg.StorageDir, 0755); err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+
+	safe := sanitizeFilename(name)
+	stored := randomID(8) + "_" + safe
+	dst, err := os.Create(filepath.Join(s.cfg.StorageDir, stored))
+	if err != nil {
+		http.Error(w, "failed to create file", http.StatusInternalServerError)
+		return
+	}
+
+	n, err := io.Copy(dst, r.Body)
+	dst.Close()
+	if err != nil {
+		os.Remove(filepath.Join(s.cfg.StorageDir, stored))
+		http.Error(w, fmt.Sprintf("upload failed (over %d MB limit?)", s.cfg.MaxFileSizeMB), http.StatusBadRequest)
+		return
+	}
+
+	share := &Share{
+		ID: randomID(10),
+		Files: []FileInfo{{
+			Name:       name,
+			Size:       n,
+			UploadedAt: time.Now(),
+			StoredName: stored,
+		}},
+		CreatedAt: time.Now(),
+		ExpiresAt: time.Now().Add(time.Duration(s.cfg.ShareExpiryHours) * time.Hour),
+	}
+	if err := s.store.add(share); err != nil {
+		http.Error(w, "failed to save share", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(toShareOut(share, baseURL(r)))
 }
 
 func (s *server) handleShares(w http.ResponseWriter, r *http.Request) {
@@ -397,8 +504,14 @@ func (s *server) handleShares(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	base := baseURL(r)
+	shares := s.store.list()
+	out := make([]ShareOut, 0, len(shares))
+	for _, sh := range shares {
+		out = append(out, toShareOut(sh, base))
+	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(s.store.list())
+	json.NewEncoder(w).Encode(out)
 }
 
 func (s *server) handleShareOp(w http.ResponseWriter, r *http.Request) {
@@ -427,7 +540,7 @@ func (s *server) handleShareOp(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(share)
+		json.NewEncoder(w).Encode(toShareOut(share, baseURL(r)))
 
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -528,10 +641,7 @@ func (s *server) handleLinks(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	ip := r.RemoteAddr
-	if i := strings.LastIndex(ip, ":"); i >= 0 {
-		ip = ip[:i]
-	}
+	ip := ipOf(r)
 	if !s.rl.allow(ip+"_link", 10.0/60.0, 10) {
 		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 		return
@@ -577,7 +687,7 @@ func (s *server) handleLinks(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(share)
+	json.NewEncoder(w).Encode(toShareOut(share, baseURL(r)))
 }
 
 func loadConfig(path string) (*Config, error) {
